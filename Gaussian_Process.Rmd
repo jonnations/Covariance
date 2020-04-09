@@ -1,0 +1,100 @@
+---
+title: "Gaussian_Practice"
+author: "Jon Nations"
+date: "4/8/2020"
+output: html_document
+---
+
+### The goal of this project is to figure out how to do better comparative work.
+####The way to do that is:
+1) Figure out what brms is doing with ```cov_ranef```, is it infact Brownian Motion?
+2) See what the Stan code for a similar model is in Rethinking, but using the other Gaussian Process regression codes (Not Brownian Motion)
+3) See if I can use my Stan script from a brms model and replace the ```cov_ranef``` with one of the other Gaussian Processes from Rethinking 2nd ed. Chapter 14.
+#### Setup
+```{r set root}
+knitr::opts_knit$set(root.dir = "~/Documents/Projects/Covariance/Covariance")
+```
+
+```{r libraries}
+library(tidyverse)
+library(rethinking)
+library(brms)
+library(ape)
+```
+
+```{r data}
+data("Primates301")
+data("Primates301_nex")
+```
+
+#### Compare BRMS Stancode to Rethinking Stancode
+I need to know what brms is doing. I think I will use the same models from Rethinking in brms so I don't have to try to switch the other way, from brms to rethinking. 
+
+Get Data sorted
+```{r data}
+d <- Primates301
+d$name <- as.character(d$name)
+dstan <- d[ complete.cases(d$group_size, d$body, d$brain), ]
+spp_obs <- dstan$name
+
+# Rethinking data -----
+dat_list <- list(N_spp = nrow(dstan),
+                 M = standardize(log(dstan$body)),
+                 B = standardize(log(dstan$brain)),
+                 G = standardize(log(dstan$group_size)),
+                  Imat = diag(nrow(dstan)))
+
+# BRMS Data -----
+dstan$M = standardize(log(dstan$body))
+dstan$B = standardize(log(dstan$brain))
+dstan$G = standardize(log(dstan$group_size))
+```
+
+Get tree sorted
+Interestingly, Rethinking called the corBrownian command before getting the VCV matrix, however, I can't see a single difference between the matrices V and V2 below.
+```{r tree}
+
+tree_trimmed <- keep.tip(Primates301_nex, spp_obs)
+#Brownian Tree
+Rbm <- corBrownian(phy = tree_trimmed)
+V <- vcv(Rbm)
+dat_list$V <- V[spp_obs, spp_obs]
+dat_list$R <- dat_list$V / max(V)
+# Non-Brownian Tree, but same thing!
+V2 <- vcv(tree_trimmed)
+```
+
+BRMS Code
+```{r brms bm14.10}
+bm14.10 <- brm(B ~ M + G + (1|name),
+               data = dstan,
+               family = gaussian(),
+               cov_ranef = list(name = V2),
+                 prior = c(
+                           prior(normal(0, 1), "Intercept"),
+                           prior(normal(0, 0.5), "b"),
+                           prior(exponential(1), "sigma")),
+              cores = 4)
+```
+
+```{r}
+summary(bm14.10)
+```
+
+Rethinking Code
+```{r rethinking rm14.10}
+rm14.10 <- ulam(
+  alist(
+    B ~ multi_normal( mu, SIGMA),
+    mu <- a + bM*M + bG*G,
+    matrix[ N_spp, N_spp]: SIGMA <- R * sigma_sq,
+    a ~ normal(0, 1),
+    c(bM, bG) ~ normal(0, 0.5),
+    sigma_sq ~ exponential(1)),
+    data = dat_list, chains = 4, cores = 4)
+```
+
+```{r}
+precis(rm14.10)
+```
+
